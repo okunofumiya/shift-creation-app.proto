@@ -8,21 +8,17 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
 # ★★★ バージョン情報 ★★★
-APP_VERSION = "proto.1.2"
+APP_VERSION = "proto.1.3"
 APP_CREDIT = "Okuno with 🤖 Gemini"
 
 # --- ヘルパー関数: サマリー作成 ---
 def _create_summary(schedule_df, staff_info_dict, year, month, event_units):
-    num_days = calendar.monthrange(year, month)[1]
-    days = list(range(1, num_days + 1))
-    daily_summary = []
+    num_days = calendar.monthrange(year, month)[1]; days = list(range(1, num_days + 1)); daily_summary = []
     for d in days:
-        day_info = {}
-        work_staff_ids = schedule_df[schedule_df[d] == '出']['職員番号']
+        day_info = {}; work_staff_ids = schedule_df[schedule_df[d] == '出']['職員番号']
         half_day_staff_ids = [s for s, dates in st.session_state.requests_half.items() if d in dates]
         total_workers = sum(0.5 if sid in half_day_staff_ids else 1 for sid in work_staff_ids)
-        day_info['日'] = d
-        day_info['曜日'] = ['月','火','水','木','金','土','日'][calendar.weekday(year, month, d)]
+        day_info['日'] = d; day_info['曜日'] = ['月','火','水','木','金','土','日'][calendar.weekday(year, month, d)]
         day_info['出勤者総数'] = total_workers
         day_info['PT'] = sum(0.5 if sid in half_day_staff_ids else 1 for sid in work_staff_ids if staff_info_dict[sid]['職種'] == '理学療法士')
         day_info['OT'] = sum(0.5 if sid in half_day_staff_ids else 1 for sid in work_staff_ids if staff_info_dict[sid]['職種'] == '作業療法士')
@@ -35,11 +31,8 @@ def _create_summary(schedule_df, staff_info_dict, year, month, event_units):
             pt_units = sum(int(staff_info_dict[sid]['1日の単位数']) * (0.5 if sid in half_day_staff_ids else 1) for sid in work_staff_ids if staff_info_dict[sid]['職種'] == '理学療法士')
             ot_units = sum(int(staff_info_dict[sid]['1日の単位数']) * (0.5 if sid in half_day_staff_ids else 1) for sid in work_staff_ids if staff_info_dict[sid]['職種'] == '作業療法士')
             st_units = sum(int(staff_info_dict[sid]['1日の単位数']) * (0.5 if sid in half_day_staff_ids else 1) for sid in work_staff_ids if staff_info_dict[sid]['職種'] == '言語聴覚士')
-            day_info['PT単位数'] = pt_units
-            day_info['OT単位数'] = ot_units
-            day_info['ST単位数'] = st_units
-            day_info['PT+OT単位数'] = pt_units + ot_units
-            day_info['特別業務単位数'] = event_units.get(d, 0)
+            day_info['PT単位数'] = pt_units; day_info['OT単位数'] = ot_units; day_info['ST単位数'] = st_units
+            day_info['PT+OT単位数'] = pt_units + ot_units; day_info['特別業務単位数'] = event_units.get(d, 0)
         else:
             day_info['PT単位数'] = '-'; day_info['OT単位数'] = '-'; day_info['ST単位数'] = '-';
             day_info['PT+OT単位数'] = '-'; day_info['特別業務単位数'] = '-'
@@ -50,11 +43,7 @@ def _create_summary(schedule_df, staff_info_dict, year, month, event_units):
 def _create_schedule_df(shifts_values, staff, days, staff_df, requests_x, requests_tri, requests_paid, requests_special):
     schedule_data = {}
     for s in staff:
-        row = []
-        s_requests_x = requests_x.get(s, [])
-        s_requests_tri = requests_tri.get(s, [])
-        s_requests_paid = requests_paid.get(s, [])
-        s_requests_special = requests_special.get(s, [])
+        row = []; s_requests_x = requests_x.get(s, []); s_requests_tri = requests_tri.get(s, []); s_requests_paid = requests_paid.get(s, []); s_requests_special = requests_special.get(s, [])
         for d in days:
             if shifts_values.get((s, d), 0) == 0:
                 if d in s_requests_x: row.append('×')
@@ -70,6 +59,53 @@ def _create_schedule_df(shifts_values, staff, days, staff_df, requests_x, reques
     schedule_df.insert(1, '職員名', schedule_df['職員番号'].map(staff_map['職員名']))
     schedule_df.insert(2, '職種', schedule_df['職員番号'].map(staff_map['職種']))
     return schedule_df
+
+# ★★★ ペナルティ内訳計算ヘルパー ★★★
+def _calculate_penalty_breakdown(shifts_values, params):
+    breakdown = {}
+    # (週休ルール)
+    full_week_violations = 0; partial_week_violations = 0
+    for s_idx, s in enumerate(params['staff']):
+        all_requests = params['requests_x'].get(s, []) + params['requests_tri'].get(s, []) + params['requests_paid'].get(s, []) + params['requests_special'].get(s, [])
+        for w_idx, week in enumerate(params['weeks_in_month']):
+            if sum(1 for d in week if d in all_requests) >= 3: continue
+            num_holidays_in_week = sum(1 for d in week if shifts_values.get((s, d)) == 0)
+            if len(week) == 7 and num_holidays_in_week < 2: full_week_violations += 1
+            elif len(week) < 7 and num_holidays_in_week < 1: partial_week_violations += 1
+    breakdown['S0: 完全な週'] = full_week_violations * 200
+    breakdown['S2: 不完全な週'] = partial_week_violations * 25
+    
+    sun_penalty = 0
+    for d in params['sundays']:
+        pt_on = sum(shifts_values.get((s, d)) for s in params['pt_staff']); ot_on = sum(shifts_values.get((s, d)) for s in params['ot_staff']); st_on = sum(shifts_values.get((s, d)) for s in params['st_staff'])
+        sun_penalty += 50 * abs((pt_on + ot_on) - (params['target_pt'] + params['target_ot']))
+        sun_penalty += 40 * max(0, abs(pt_on - params['target_pt']) - params['tolerance'])
+        sun_penalty += 40 * max(0, abs(ot_on - params['target_ot']) - params['tolerance'])
+        sun_penalty += 60 * abs(st_on - params['target_st'])
+    breakdown['S1: 日曜人数'] = round(sun_penalty)
+
+    breakdown['S3: 外来同時休'] = round(sum(max(0, sum(1 - shifts_values.get((s, d)) for s in params['gairai_staff']) - 1) * 10 for d in params['days']))
+    breakdown['S4: 準希望休(△)'] = round(sum(shifts_values.get((s, d)) for s, dates in params['requests_tri'].items() for d in dates) * params['tri_penalty_weight'])
+    kaifukuki_penalty = 0
+    for d in params['days']:
+        if sum(shifts_values.get((s, d)) for s in params['kaifukuki_pt']) == 0: kaifukuki_penalty += 5
+        if sum(shifts_values.get((s, d)) for s in params['kaifukuki_ot']) == 0: kaifukuki_penalty += 5
+    breakdown['S5: 回復期配置'] = kaifukuki_penalty
+    
+    unit_penalty = 0; staff_penalty = 0
+    avg_residual_units = params['avg_residual_units']
+    for d in params['weekdays']:
+        provided_units = sum(shifts_values.get((s, d)) * int(params['staff_info'][s]['1日の単位数']) * (0.5 if s in params['requests_half'].get(s, []) and d in params['requests_half'][s] else 1.0) for s in params['staff'])
+        event_unit = params['event_units'].get(d, 0)
+        unit_penalty += abs((provided_units - event_unit) - round(avg_residual_units))
+    for job, members in params['job_types'].items():
+        if not members: continue
+        target_per_weekday = params['target_staff_weekday'][job]
+        for d in params['weekdays']:
+            staff_penalty += abs(sum(shifts_values.get((s, d)) for s in members) - round(target_per_weekday))
+    breakdown['S6: 業務負荷平準化'] = round(unit_penalty * params.get('unit_penalty_weight', 2))
+    breakdown['S7: 職種人数平準化'] = round(staff_penalty * params.get('staff_penalty_weight', 1))
+    return breakdown
 
 # --- メインのソルバー関数 (3パターン探索) ---
 def solve_three_patterns(staff_df, requests_df, year, month, 
@@ -88,12 +124,9 @@ def solve_three_patterns(staff_df, requests_df, year, month,
     for index, row in requests_df.iterrows():
         staff_id = row['職員番号']
         if staff_id not in staff: continue
-        requests_x[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) == '×']
-        requests_tri[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) == '△']
-        requests_must_work[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) == '○']
-        requests_paid[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) == '有']
-        requests_special[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) == '特']
-        st.session_state.requests_half[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) in ['AM有', 'PM有']]
+        requests_x[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) == '×']; requests_tri[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) == '△']
+        requests_must_work[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) == '○']; requests_paid[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) == '有']
+        requests_special[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) == '特']; st.session_state.requests_half[staff_id] = [d for d in days if str(d) in row and row.get(str(d)) in ['AM有', 'PM有']]
     def build_model(add_distance_constraint=False, base_solution=None, high_flat_penalty=False):
         model = cp_model.CpModel()
         shifts = {(s, d): model.NewBoolVar(f'shift_{s}_{d}') for s in staff for d in days}
@@ -160,6 +193,16 @@ def solve_three_patterns(staff_df, requests_df, year, month,
         model.Minimize(sum(penalties))
         return model, shifts
     
+    params = locals()
+    params['job_types'] = {'PT': pt_staff, 'OT': ot_staff, 'ST': st_staff}
+    params['weeks_in_month'] = []
+    current_week = [];
+    for d in days:
+        current_week.append(d)
+        if calendar.weekday(year, month, d) == 5 or d == num_days: params['weeks_in_month'].append(current_week); current_week = []
+    params['avg_residual_units'] = (sum(int(staff_info[s]['1日の単位数']) for s in staff) * (len(weekdays)) * (len(staff)-9)/len(staff) - sum(event_units.values())) / len(weekdays) if weekdays else 0
+    params['target_staff_weekday'] = {job: (num_days - 9) * len(members) / len(weekdays) if weekdays else 0 for job, members in params['job_types'].items() if members}
+
     results = []
     base_solution_values = None
     with st.spinner("パターン1 (最適解) を探索中..."):
@@ -170,7 +213,9 @@ def solve_three_patterns(staff_df, requests_df, year, month,
     base_solution_values = {(s, d): solver1.Value(shifts1[(s, d)]) for s in staff for d in days}
     result1 = {"title": "勤務表パターン1", "status": solver1.StatusName(status1), "penalty": round(solver1.ObjectiveValue())}
     result1["schedule_df"] = _create_schedule_df(base_solution_values, staff, days, staff_df, requests_x, requests_tri, requests_paid, requests_special)
+    result1["breakdown"] = _calculate_penalty_breakdown(base_solution_values, params)
     results.append(result1)
+    
     with st.spinner(f"パターン2 (パターン1と{min_distance_N}マス以上違う解) を探索中..."):
         model2, shifts2 = build_model(add_distance_constraint=True, base_solution=base_solution_values)
         solver2 = cp_model.CpSolver(); solver2.parameters.max_time_in_seconds = 20.0; status2 = solver2.Solve(model2)
@@ -178,7 +223,9 @@ def solve_three_patterns(staff_df, requests_df, year, month,
         solution2_values = {(s, d): solver2.Value(shifts2[(s, d)]) for s in staff for d in days}
         result2 = {"title": "勤務表パターン2", "status": solver2.StatusName(status2), "penalty": round(solver2.ObjectiveValue())}
         result2["schedule_df"] = _create_schedule_df(solution2_values, staff, days, staff_df, requests_x, requests_tri, requests_paid, requests_special)
+        result2["breakdown"] = _calculate_penalty_breakdown(solution2_values, params)
         results.append(result2)
+
     with st.spinner("パターン3 (平準化重視) を探索中..."):
         model3, shifts3 = build_model(high_flat_penalty=True)
         solver3 = cp_model.CpSolver(); solver3.parameters.max_time_in_seconds = 20.0; status3 = solver3.Solve(model3)
@@ -186,12 +233,18 @@ def solve_three_patterns(staff_df, requests_df, year, month,
         solution3_values = {(s, d): solver3.Value(shifts3[(s, d)]) for s in staff for d in days}
         result3 = {"title": "パターン3 (平準化重視)", "status": solver3.StatusName(status3), "penalty": round(solver3.ObjectiveValue())}
         result3["schedule_df"] = _create_schedule_df(solution3_values, staff, days, staff_df, requests_x, requests_tri, requests_paid, requests_special)
+        params['unit_penalty_weight'] = 4; params['staff_penalty_weight'] = 3
+        result3["breakdown"] = _calculate_penalty_breakdown(solution3_values, params)
         results.append(result3)
+    
     return True, results, f"{len(results)}パターンの探索が完了しました。"
 
 def display_result(result_data, staff_info, event_units, year, month):
     st.header(result_data['title'])
-    st.info(f"求解ステータス: **{result_data['status']}** (ペナルティ合計: **{result_data['penalty']}**)")
+    st.info(f"求解ステータス: **{result_data['status']}** | ペナルティ合計: **{result_data['penalty']}**")
+    with st.expander("ペナルティの内訳を表示"):
+        for rule, score in result_data['breakdown'].items():
+            st.metric(label=rule, value=score)
     schedule_df = result_data["schedule_df"]
     temp_work_df = schedule_df.replace({'×': '休', '-': '休', '△': '休', '有': '休', '特': '休', '': '出'})
     summary_df = _create_summary(temp_work_df, staff_info, year, month, event_units)
@@ -222,12 +275,10 @@ def display_result(result_data, staff_info, event_units, year, month):
 # --- Streamlit UI ---
 st.set_page_config(layout="wide")
 st.title('リハビリテーション科 勤務表作成アプリ')
-
 today = datetime.now()
 next_month_date = today + relativedelta(months=1)
 default_year = next_month_date.year
 default_month_index = next_month_date.month - 1
-
 with st.expander("▼ 各種パラメータを設定する", expanded=True):
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -248,7 +299,6 @@ with st.expander("▼ 各種パラメータを設定する", expanded=True):
         tolerance = st.number_input("PT/OT許容誤差(±)", min_value=0, max_value=5, value=1, help="PT/OTの合計人数が目標通りなら、それぞれの人数がこの値までずれてもペナルティを課しません。")
         tri_penalty_weight = st.slider("準希望休(△)の優先度", min_value=0, max_value=20, value=8, help="値が大きいほど△希望が尊重されます。")
         min_distance = st.number_input("パターン2の最低相違マス数(N)", min_value=1, value=50, step=10, help="パターン1と最低でもこれだけ違うマスを持つパターン2を探します。")
-
     st.markdown("---")
     st.subheader(f"{year}年{month}月のイベント設定（各日の特別業務単位数を入力）")
     event_units_input = {}
@@ -268,10 +318,8 @@ with st.expander("▼ 各種パラメータを設定する", expanded=True):
                 event_units_input[day_counter] = st.number_input(label=f"{day_counter}日", value=0, step=10, disabled=is_sunday, key=f"event_{year}_{month}_{day_counter}")
             day_counter += 1
         if day_counter > num_days_in_month: break
-            
     st.markdown("---")
     create_button = st.button('勤務表を作成', type="primary", use_container_width=True)
-
 with st.expander("現在のルール一覧を表示"):
     st.markdown(f"""
     #### 絶対に守るルール（ハード制約）
@@ -288,10 +336,9 @@ with st.expander("現在のルール一覧を表示"):
     - 🔵 **S3:** **外来担当** が同時に **2人以上** 休むのを避ける (ペナルティ: 10)
     - 🔵 **S4:** **準希望休(△)** を尊重する（現在設定中のペナルティ: **{tri_penalty_weight}**）
     - 🔵 **S5:** **回復期担当** をPT1名, OT1名配置する (ペナルティ: 5)
-    - 🔵 **S6:** 平日の **業務負荷（残余単位数）** を平坦にする (ペナルティ: 2)
-    - 🔵 **S7:** 平日の **職種ごと人数** を平坦にする (ペナルティ: 1)
+    - 🔵 **S6:** 平日の **業務負荷（残余単位数）** を平坦にする (ペナルティ: 2、平準化重視パターンでは4)
+    - 🔵 **S7:** 平日の **職種ごと人数** を平坦にする (ペナルティ: 1、平準化重視パターンでは3)
     """)
-
 if create_button:
     if staff_file is not None and requests_file is not None:
         try:
@@ -299,13 +346,11 @@ if create_button:
             if '職員名' not in staff_df.columns:
                 staff_df['職員名'] = staff_df['職種'] + " " + staff_df['職員番号'].astype(str)
                 st.info("職員一覧に「職員名」列がなかったため、仮の職員名を生成しました。")
-            
             is_feasible, results, message = solve_three_patterns(
                 staff_df, requests_df, year, month,
                 target_pt, target_ot, target_st, tolerance,
                 event_units_input, tri_penalty_weight, min_distance
             )
-            
             st.success(message)
             if is_feasible:
                 staff_info = staff_df.set_index('職員番号').to_dict('index')
@@ -314,14 +359,11 @@ if create_button:
                     cols = st.columns(num_results)
                     for i, res in enumerate(results):
                         with cols[i]:
-                            display_result(res, staff_info, event_units_input, year, month)
-        
+                            display_result(res, staff_info, event_units_input, year, month, res.get('params', {}))
         except Exception as e:
             st.error(f'予期せぬエラーが発生しました: {e}')
             st.exception(e)
     else:
         st.warning('職員一覧と希望休一覧の両方のファイルをアップロードしてください。')
-
-# --- バージョン情報フッター ---
 st.markdown("---")
-st.markdown(f"<div style='text-align: right; color: grey;'>App Version: {APP_VERSION} ({APP_CREDIT})</div>", unsafe_allow_html=True)
+st.markdown(f"<div style='text-align: right; color: grey;'>{APP_CREDIT} | Version: {APP_VERSION}</div>", unsafe_allow_html=True)
