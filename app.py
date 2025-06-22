@@ -7,7 +7,7 @@ import io
 from datetime import datetime
 
 # ★★★ バージョン情報 ★★★
-APP_VERSION = "proto.1.0"
+APP_VERSION = "proto.1.1" # バージョンアップ！
 
 # --- ヘルパー関数: サマリー作成 ---
 def _create_summary(schedule_df, staff_info_dict, year, month, event_units):
@@ -141,7 +141,8 @@ def solve_final_model(staff_df, requests_df, year, month,
     job_types = {'PT': pt_staff, 'OT': ot_staff, 'ST': st_staff};
     for job, members in job_types.items():
         if not members: continue
-        avg_work_days = (num_days - 9) * len(members); target_per_weekday = avg_work_days / len(weekdays) if weekdays else 0
+        total_shifts = sum( (0.5 if s in st.session_state.requests_half.get(s, []) else 1.0) for s in members) * (len(weekdays)) / num_days * (num_days - 9)
+        target_per_weekday = total_shifts / len(weekdays) if weekdays else 0
         for d in weekdays:
             actual = sum(shifts[(s, d)] for s in members); diff = model.NewIntVar(-len(members), len(members), f'd_{job}_{d}'); model.Add(diff == actual - round(target_per_weekday)); abs_diff = model.NewIntVar(0, len(members), f'a_d_{job}_{d}'); model.AddAbsEquality(abs_diff, diff); penalties.append(1 * abs_diff)
     total_weekday_units = sum(int(staff_info[s]['1日の単位数']) for s in staff) * (len(weekdays)) * (len(staff)-9)/len(staff); total_event_units = sum(event_units.values()); avg_residual_units = (total_weekday_units - total_event_units) / len(weekdays) if weekdays else 0
@@ -208,6 +209,28 @@ with st.expander("▼ 各種パラメータを設定する", expanded=True):
     st.markdown("---")
     create_button = st.button('勤務表を作成', type="primary", use_container_width=True)
 
+# ★★★ ルール一覧表示機能を復活 ★★★
+with st.expander("現在のルール一覧を表示"):
+    st.markdown(f"""
+    #### 絶対に守るルール（ハード制約）
+    - ✅ **H1:** 各職員の総休み日数を **「公休9日」 + 「有休/特休の日数」** にする
+    - ✅ **H2:** 希望休 **(×, 有, 特, ○, AM/PM有)** で指定された勤務状態を遵守する
+    - ✅ **H3:** **役職者** は毎日1人以上出勤する
+    - ✅ **H4:** **外来・地域包括** 担当は日曜日に休む
+    - ✅ **H5:** 全員、日曜日の出勤は **最大2日** まで
+
+    #### できるだけ守りたいルール（ソフト制約とペナルティ）
+    - 🔴 **S0:** **完全な週（7日間）**は **2日以上** 休む (ペナルティ: 200)
+    - 🔵 **S1:** **日曜日の出勤人数** を目標値に近づける (ペナルティ: 40～60)
+    - 🔵 **S2:** **不完全な週** は **1日以上** 休む (ペナルティ: 25)
+    - 🔵 **S3:** **外来担当** が同時に **2人以上** 休むのを避ける (ペナルティ: 10)
+    - 🔵 **S4:** **準希望休(△)** を尊重する（現在設定中のペナルティ: **{tri_penalty_weight}**）
+    - 🔵 **S5:** **回復期担当** をPT1名, OT1名配置する (ペナルティ: 5)
+    - 🔵 **S6:** 平日の **業務負荷（残余単位数）** を平坦にする (ペナルティ: 2)
+    - 🔵 **S7:** 平日の **職種ごと人数** を平坦にする (ペナルティ: 1)
+    """)
+
+# --- メインの処理と表示 ---
 if create_button:
     if staff_file is not None and requests_file is not None:
         try:
